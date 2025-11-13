@@ -1,0 +1,11 @@
+langchain==1.0.5
+langchain_community
+langchain_text_splitters
+langchain_huggingface
+transformers>=4.36.0
+torch>=2.1.0
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4       # Windows如無Linux就用CPU版
+pypdf>=3.17.4
+accelerate>=0.24.0
+scikit-learn>=1.3.0
