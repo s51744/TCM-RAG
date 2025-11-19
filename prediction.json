@@ -1,0 +1,22 @@
+{
+    "image": "C:\\Users\\peter\\OneDrive\\Desktop\\merger_version\\uploads\\tmpi3gpdskh.jpg",
+    "detections": [
+        {
+            "id": 9,
+            "name": "白苔舌",
+            "meaning": "多見於寒證或脾胃虛弱。",
+            "region": "舌中",
+            "confidence": 0.918,
+            "confidence_level": "High"
+        },
+        {
+            "id": 9,
+            "name": "白苔舌",
+            "meaning": "多見於寒證或脾胃虛弱。",
+            "region": "舌中",
+            "confidence": 0.903,
+            "confidence_level": "High"
+        }
+    ],
+    "summary": "白苔舌（舌中），白苔舌（舌中）"
+}
