@@ -2,21 +2,21 @@
     "image": "C:\\Users\\peter\\OneDrive\\Desktop\\merger_version\\uploads\\tmpi3gpdskh.jpg",
     "detections": [
         {
-            "id": 9,
-            "name": "白苔舌",
-            "meaning": "多見於寒證或脾胃虛弱。",
+            "id": 8,
+            "name": "黃苔",
+            "meaning": "多見於熱證。",
             "region": "舌中",
             "confidence": 0.918,
             "confidence_level": "High"
         },
         {
-            "id": 9,
-            "name": "白苔舌",
-            "meaning": "多見於寒證或脾胃虛弱。",
-            "region": "舌中",
-            "confidence": 0.903,
+            "id": 10,
+            "name": "紅舌",
+            "meaning": "屬熱，常伴黃苔或紅點",
+            "region": "邊緣",
+            "confidence": 0.703,
             "confidence_level": "High"
         }
     ],
-    "summary": "白苔舌（舌中），白苔舌（舌中）"
+    "summary": "白苔舌（舌中），紅舌（邊緣）"
 }
