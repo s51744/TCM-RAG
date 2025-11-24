@@ -84,7 +84,7 @@ def ask_llm(tongue_stat_text, user_query, conversation_history):
             **inputs,
             streamer=streamer,
             max_new_tokens=max_token,
-            do_sample=False
+            do_sample=True
         )
 
 # ---- 主流程 ----

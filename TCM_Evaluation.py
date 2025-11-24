@@ -1,141 +1,140 @@
-import os
-import json
 import torch
-import time
+import json
+import os
+import re
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 
-# ==== 基本參數 ====
-max_token = 512
-top_k = 5
-max_retries = 5
-retry_delay = 30
-model_name = "QLU-NLP/BianCang-Qwen2-7B-Instruct"
-embeddings_model_name = "BAAI/bge-large-zh-v1.5"
-vector_db_dir = "./tcm_vector_db"
-exam_dir = "./llm_exam"
-result_dir = "./llm_result"
-os.makedirs(result_dir, exist_ok=True)
+# --- 參數設定 ---
+# 移除了 VECTOR_DB_DIR 和 Embeddings 相關參數
+SENTENCE_DIR = "./llm_exam/sentence"
+ANSWER_DIR = "./llm_exam/answer"
+RESULT_DIR = "./llm_result"  # 更改結果輸出目錄，以區分 RAG 版本
+MODEL_NAME = "deepseek-ai/DeepSeek-V2-Lite"
+MAX_TOKEN = 3
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-# ==== 模型加載 ====
-for attempt in range(max_retries):
-    try:
-        print(f"Attempt {attempt + 1}/{max_retries} to load model and tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
-        model.eval()
-        print("Model and tokenizer loaded successfully.")
-        break
-    except Exception as e:
-        print(f"Download failed: {e}")
-        if attempt < max_retries - 1:
-            print(f"Retrying in {retry_delay} seconds...")
-            time.sleep(retry_delay)
-        else:
-            print("Max retries reached. Could not download the model.")
-            raise
+# --- 載入模型 ---
+print("--- 載入模型 ---")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    dtype=torch.float16,  # 保持 float16 以節省空間
+    device_map="auto",    # <--- 關鍵修改：使用 auto 進行 CPU 卸載
+    trust_remote_code=True
+)
+model.eval()
 
-# ==== FAISS 向量庫載入 ====
-embeddings = HuggingFaceEmbeddings(model_name=embeddings_model_name)
-db = FAISS.load_local(vector_db_dir, embeddings=embeddings, allow_dangerous_deserialization=True)
-retriever = db.as_retriever(search_kwargs={"k": top_k})
+# --- 基礎模型推論函式 (不使用 RAG) ---
+def generate_base_response(question, options):
+    """執行基礎 LLM 推論，不進行 RAG 檢索"""
+    if isinstance(options, dict):
+        option_str = ", ".join([f"{k}: {v}" for k, v in options.items()])
+    elif isinstance(options, list):
+        option_str = ", ".join([f"{chr(65 + i)}: {option}" for i, option in enumerate(options)])
+    else:
+        option_str = str(options) # Fallback for unexpected types
+    
+    # 構建 Prompt：直接問答，不加入任何外部知識庫上下文
+    prompt = (
+        f"請從下列選項中，以繁體中文選出最正確的選項代號（A, B, C, D, E）。"
+        f"請只回答選項代號，不需解釋。\n"
+        f"問題：{question}\n"
+        f"選項：{option_str}\n"
+        f"答案："
+    )
 
-def build_rag_prompt(question, options=None, task_type=None, retrieved_docs=None):
-    """根據檢索、題型自動構建RAG prompt"""
-    context_with_refs = ""
-    if retrieved_docs:
-        for i, doc in enumerate(retrieved_docs):
-            source = doc.metadata.get('source', '未知來源')
-            page = doc.metadata.get('page', '未知頁數')
-            context_with_refs += f"[資料{i+1} 來源:{source}, 頁:{page}]\n{doc.page_content}\n\n"
-
-    # 根據題型分類
-    if task_type == "choice":  # 選擇題
-        rag_prompt = (
-            f"{context_with_refs}\n"
-            f"請根據以上資訊，僅輸出最合適的選項代碼（A、B、C...），不附解釋。\n"
-            f"問題：{question}\n選項：{options}\n"
-        )
-    elif task_type == "entity_extraction":
-        rag_prompt = (
-            f"{context_with_refs}\n"
-            f"請根據以上資訊，結構化JSON格式列出所有中醫實體內容。\n"
-            f"問題：{question}\n"
-        )
-    else:  # 開放題/簡答題
-        rag_prompt = (
-            f"{context_with_refs}\n"
-            f"請根據以上資訊，以條列式中文摘要簡明回答，回答需引註對應來源編號。\n"
-            f"問題：{question}\n"
-        )
-    return rag_prompt
-
-def detect_task_type(q_obj):
-    """自動判斷題型"""
-    if "options" in q_obj and isinstance(q_obj["options"], list):
-        return "choice"
-    # 若有明顯結構化/抽取，可加條件
-    # if "抽取題特徵" in q_obj["question"]: return "entity_extraction"
-    return "open"
-
-def rag_generate_answer(question, options=None, task_type=None):
-    # 檢索知識文段
-    retrieved_docs = retriever.invoke(question)
-    # 組建prompt
-    rag_prompt = build_rag_prompt(question, options, task_type, retrieved_docs)
-    inputs = tokenizer(rag_prompt, return_tensors="pt").to(model.device)
+    # 1. 模型生成
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        output = model.generate(
+        outputs = model.generate(
             **inputs,
-            max_new_tokens=max_token,
-            do_sample=False,
-            temperature=0.7,
-            top_k=50,
+            max_new_tokens=MAX_TOKEN,
+            do_sample=False,  # 評估時建議使用確定性的 Greedy Search
+            use_cache=False,  #KV 快取關閉
+            eos_token_id=tokenizer.eos_token_id 
         )
-        answer_text = tokenizer.decode(output[0], skip_special_tokens=True)
+    
+    # 2. 解碼與後處理
+    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True).strip()
+    
+    # 提取第一個大寫字母作為答案
+    match = re.search(r'[A-E]', response)
+    predicted_answer = match.group(0) if match else response
+    
+    # 不使用 RAG，所以 context 為空字串
+    context = "" 
+    
+    return predicted_answer, context
 
-        # 後處理
-        if task_type == "choice":
-            import re
-            match = re.search(r"\b[ABCDE]\b", answer_text)
-            answer = match.group() if match else ""
-        elif task_type == "entity_extraction":
-            import json
-            try:
-                json_struct = json.loads(answer_text)
-                answer = json.dumps(json_struct, ensure_ascii=False)
-            except Exception:
-                answer = answer_text
-        else:  # 普通開放題
-            answer = answer_text.strip()
-        return answer
+# --- 主評估流程 ---
+def run_evaluation():
+    """執行所有檔案的評估"""
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    
+    # 獲取所有題目檔案名稱 (TCM_ED_A.jsonl, TCM_ED_B.jsonl)
+    exam_files = [f for f in os.listdir(SENTENCE_DIR) if f.endswith(".jsonl")]
 
-# ==== 批量處理所有題目 ====
-for fname in os.listdir(exam_dir):
-    if not fname.endswith(".jsonl"):
-        continue
-    src_path = os.path.join(exam_dir, fname)
-    dst_path = os.path.join(result_dir, fname)
-    print(f"開始處理：{fname}")
+    for filename in exam_files:
+        print(f"\n--- 開始評估檔案: {filename} ---")
+        sentence_path = os.path.join(SENTENCE_DIR, filename)
+        answer_path = os.path.join(ANSWER_DIR, filename)
+        result_path = os.path.join(RESULT_DIR, f"result_base_{filename}") # 更改輸出檔名
+        
+        # 載入題目
+        with open(sentence_path, 'r', encoding='utf-8') as f:
+            questions = [json.loads(line) for line in f][:500]
+        
+        # 載入標準答案
+        with open(answer_path, 'r', encoding='utf-8') as f:
+            answers = [json.loads(line) for line in f][:500]
+        
+        if len(questions) != len(answers):
+            print(f"警告: {filename} 的題目數與答案數不匹配，跳過此檔案。")
+            continue
 
-    with open(src_path, "r", encoding="utf-8") as fin, open(dst_path, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=fname):
-            try:
-                q_obj = json.loads(line)
-            except Exception as e:
-                print(f"JSON格式錯誤: {e}")
-                continue
+        total_correct = 0
+        all_results = []
+        
+        # 遍歷所有題目
+        for q_data, a_data in tqdm(zip(questions, answers), total=len(questions), desc=f"評估 {filename}"):
+            question = q_data['question']
+            options = q_data['options']
+            true_answer = a_data['answer']
+            
+            # 使用基礎模型推論
+            predicted_answer, context = generate_base_response(question, options)
+            
+            is_correct = (predicted_answer == true_answer)
+            if is_correct:
+                total_correct += 1
+            
+            # 儲存詳細結果
+            result_entry = {
+                "id": q_data['id'],
+                "question": question,
+                "options": options,
+                "true_answer": true_answer,
+                "predicted_answer": predicted_answer,
+                "is_correct": is_correct,
+                "rag_context": "N/A (Base Model Evaluation)" # 標記為 N/A
+            }
+            all_results.append(result_entry)
 
-            task_type = detect_task_type(q_obj)
-            question = q_obj.get("question")
-            options = q_obj.get("options") if "options" in q_obj else None
+        # 寫入結果檔案
+        with open(result_path, 'w', encoding='utf-8') as f:
+            for entry in all_results:
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
-            answer = rag_generate_answer(question, options, task_type)
-            q_obj["answer"] = answer
-            fout.write(json.dumps(q_obj, ensure_ascii=False)+'\n')
+        # 輸出總結
+        total_questions = len(questions)
+        accuracy = (total_correct / total_questions) * 100 if total_questions > 0 else 0
+        print(f"--- {filename} 評估總結 (Base Model) ---")
+        print(f"總題數: {total_questions}")
+        print(f"答對題數: {total_correct}")
+        print(f"準確率: {accuracy:.2f}%")
+        print(f"詳細結果已儲存至: {result_path}")
+        print("----------------------------")
 
-    print(f"完成：{fname}，結果已存 {dst_path}")
-
-print("全部題庫處理完畢，llm_result 資料夾已生成！")
+if __name__ == "__main__":
+    run_evaluation()
