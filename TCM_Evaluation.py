@@ -10,7 +10,7 @@ from tqdm import tqdm
 SENTENCE_DIR = "./llm_exam/sentence"
 ANSWER_DIR = "./llm_exam/answer"
 RESULT_DIR = "./llm_result"  # 更改結果輸出目錄，以區分 RAG 版本
-MODEL_NAME = "deepseek-ai/DeepSeek-V2-Lite"
+MODEL_NAME = "QLU-NLP/BianCang-Qwen2-7B-Instruct"
 MAX_TOKEN = 3
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
